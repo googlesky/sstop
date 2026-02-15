@@ -60,6 +60,7 @@ func FormatRateCompact(bps float64) string {
 		K = 1024.0
 		M = K * 1024
 		G = M * 1024
+		T = G * 1024
 	)
 	switch {
 	case bps < 1:
@@ -76,8 +77,12 @@ func FormatRateCompact(bps float64) string {
 		return fmt.Sprintf("%5.0fM", bps/M)
 	case bps < 10*G:
 		return fmt.Sprintf("%5.1fG", bps/G)
-	default:
+	case bps < T:
 		return fmt.Sprintf("%5.0fG", bps/G)
+	case bps < 10*T:
+		return fmt.Sprintf("%5.1fT", bps/T)
+	default:
+		return fmt.Sprintf("%5.0fT", bps/T)
 	}
 }
 
