@@ -157,8 +157,8 @@ func (t *processTable) selected() *model.ProcessSummary {
 // Column widths
 const (
 	colPidW    = 8
-	colUpW     = 11
-	colDownW   = 11
+	colUpW     = 12 // bar(5) + gap(1) + text(6)
+	colDownW   = 12 // bar(5) + gap(1) + text(6)
 	colConnsW  = 6
 	colListenW = 6
 	colGraphW  = 16 // sparkline width
@@ -183,7 +183,8 @@ func (t *processTable) render(width, height int) string {
 	}
 
 	// Dynamic name width: fill remaining space
-	fixedW := colPidW + colGraphW + colUpW + colDownW + colConnsW + colListenW + 9 + 2 // 9 gaps + 2 indent
+	// 6 gaps between 7 header columns + 2 indent
+	fixedW := colPidW + colGraphW + colUpW + colDownW + colConnsW + colListenW + 6 + 2
 	nameW := width - fixedW
 	if nameW < 10 {
 		nameW = 10
@@ -224,14 +225,10 @@ func (t *processTable) render(width, height int) string {
 
 		// Bandwidth bars integrated with rate text
 		barW := 5 // width for the bar portion
-		rateTextW := colUpW - barW - 1
-		if rateTextW < 6 {
-			rateTextW = 6
-		}
 		upBar := BandwidthBar(p.UpRate, maxUp, barW)
 		downBar := BandwidthBar(p.DownRate, maxDown, barW)
-		upText := fmt.Sprintf("%*s", rateTextW, FormatRate(p.UpRate))
-		downText := fmt.Sprintf("%*s", rateTextW, FormatRate(p.DownRate))
+		upText := FormatRateCompact(p.UpRate)   // always 6 chars
+		downText := FormatRateCompact(p.DownRate) // always 6 chars
 
 		conns := fmt.Sprintf("%*d", colConnsW, p.ConnCount)
 		listen := fmt.Sprintf("%*d", colListenW, p.ListenCount)

@@ -53,6 +53,34 @@ func FormatRate(bps float64) string {
 	}
 }
 
+// FormatRateCompact formats a bytes/sec rate to a fixed-width string (always 6 chars).
+// Uses compact units. Column headers already show "/s", so it's omitted here.
+func FormatRateCompact(bps float64) string {
+	const (
+		K = 1024.0
+		M = K * 1024
+		G = M * 1024
+	)
+	switch {
+	case bps < 1:
+		return "   0 B"
+	case bps < K:
+		return fmt.Sprintf("%4.0f B", bps)
+	case bps < 10*K:
+		return fmt.Sprintf("%5.1fK", bps/K)
+	case bps < M:
+		return fmt.Sprintf("%5.0fK", bps/K)
+	case bps < 10*M:
+		return fmt.Sprintf("%5.1fM", bps/M)
+	case bps < G:
+		return fmt.Sprintf("%5.0fM", bps/M)
+	case bps < 10*G:
+		return fmt.Sprintf("%5.1fG", bps/G)
+	default:
+		return fmt.Sprintf("%5.0fG", bps/G)
+	}
+}
+
 // Sparkline renders a slice of float64 values as a sparkline using Unicode blocks.
 // The width parameter controls how many characters to output.
 // Values are scaled relative to the maximum value in the slice.

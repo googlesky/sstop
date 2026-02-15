@@ -66,7 +66,6 @@ func (v *listenPortsView) goEnd(maxIdx int) {
 // Column widths
 const (
 	lpProtoW = 5
-	lpPortW  = 7
 	lpPidW   = 8
 	lpProcW  = 20
 )
@@ -79,7 +78,8 @@ func (v *listenPortsView) render(ports []model.ListenPortEntry, width, height in
 	}
 
 	// Dynamic address width
-	fixedW := lpProtoW + lpPortW + lpPidW + lpProcW + 6 + 2 // gaps + indent
+	// 4 columns (PROTO, ADDR, PID, PROCESS) = 3 gaps + 2 indent
+	fixedW := lpProtoW + lpPidW + lpProcW + 3 + 2
 	addrW := width - fixedW
 	cmdW := 0
 	if addrW > 40 {

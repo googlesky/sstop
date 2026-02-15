@@ -84,9 +84,13 @@ func renderHeader(snap model.Snapshot, width int, paused bool, activeIface strin
 		}
 	}
 
-	// Interface stats line — show rates for each interface
+	// Interface stats line — show rates for each interface (skip zero-traffic unless active)
 	var ifaceParts []string
 	for _, iface := range snap.Interfaces {
+		// Skip interfaces with no traffic, unless it's the selected interface
+		if iface.SendRate == 0 && iface.RecvRate == 0 && activeIface != iface.Name {
+			continue
+		}
 		// Highlight the active interface
 		nameStyle := styleDetailLabel
 		if activeIface == iface.Name {

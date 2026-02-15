@@ -76,7 +76,7 @@ func computeConnLayout(width int) connColumnLayout {
 		ageW   = 7
 		upW    = 10
 		downW  = 10
-		fixed  = protoW + stateW + ageW + upW + downW + 8 + 2 // gaps + indent
+		fixed  = protoW + stateW + ageW + upW + downW + 6 + 2 // 6 gaps between 7 columns + 2 indent
 	)
 
 	remaining := width - fixed

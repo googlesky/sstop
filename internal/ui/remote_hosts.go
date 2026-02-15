@@ -65,8 +65,8 @@ func (v *remoteHostsView) goEnd(maxIdx int) {
 
 // Column widths for remote hosts table
 const (
-	rhUpW    = 11
-	rhDownW  = 11
+	rhUpW    = 12 // bar(5) + gap(1) + text(6)
+	rhDownW  = 12 // bar(5) + gap(1) + text(6)
 	rhConnsW = 6
 	rhProcsW = 20
 )
@@ -90,8 +90,8 @@ func (v *remoteHostsView) render(hosts []model.RemoteHostSummary, width, height 
 	}
 
 	// Dynamic host width
-	// Layout: indent(2) + host + gap(1) + rhUpW + gap(1) + rhDownW + gap(1) + conns + gap(1) + procs
-	fixedW := 2 + 1 + rhUpW + 1 + rhDownW + 1 + rhConnsW + 1 + rhProcsW
+	// Layout: indent(2) + host + 4 gaps between 5 columns (HOST, UP, DOWN, CONNS, PROCS)
+	fixedW := 2 + rhUpW + rhDownW + rhConnsW + rhProcsW + 4
 	hostW := width - fixedW
 	if hostW < 15 {
 		hostW = 15
@@ -143,14 +143,10 @@ func (v *remoteHostsView) render(hosts []model.RemoteHostSummary, width, height 
 		hostName = fmt.Sprintf("%-*s", hostW, hostName)
 
 		barW := 5
-		rateTextW := rhUpW - barW - 1
-		if rateTextW < 5 {
-			rateTextW = 5
-		}
 		upBar := BandwidthBar(h.UpRate, maxUp, barW)
 		downBar := BandwidthBar(h.DownRate, maxDown, barW)
-		upText := fmt.Sprintf("%*s", rateTextW, FormatRate(h.UpRate))
-		downText := fmt.Sprintf("%*s", rateTextW, FormatRate(h.DownRate))
+		upText := FormatRateCompact(h.UpRate)   // always 6 chars
+		downText := FormatRateCompact(h.DownRate) // always 6 chars
 
 		conns := fmt.Sprintf("%*d", rhConnsW, h.ConnCount)
 		procs := Truncate(strings.Join(h.Processes, ","), rhProcsW)
