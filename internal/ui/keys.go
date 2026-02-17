@@ -24,8 +24,14 @@ const (
 	keyRemoteHosts
 	keyListenPorts
 	keyKillProcess
-	keyIntervalUp   // faster refresh
-	keyIntervalDown // slower refresh
+	keyIntervalUp      // faster refresh
+	keyIntervalDown    // slower refresh
+	keyCumulative      // toggle cumulative mode
+	keyTreeToggle      // toggle process tree view
+	keySetAlert        // set bandwidth alert
+	keySpeedUp         // playback speed up
+	keySpeedDown       // playback speed down
+	keyGroupView       // docker/systemd group view
 )
 
 func matchKey(msg tea.KeyMsg) keyAction {
@@ -70,6 +76,18 @@ func matchKey(msg tea.KeyMsg) keyAction {
 		return keyIntervalUp
 	case "-":
 		return keyIntervalDown
+	case "c":
+		return keyCumulative
+	case "t":
+		return keyTreeToggle
+	case "A":
+		return keySetAlert
+	case "right":
+		return keySpeedUp
+	case "left":
+		return keySpeedDown
+	case "D":
+		return keyGroupView
 	}
 	return keyNone
 }

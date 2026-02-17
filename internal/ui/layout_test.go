@@ -94,19 +94,20 @@ func TestProcessDetailLayout(t *testing.T) {
 		lay := computeConnLayout(width)
 
 		// Data row: indicator(2) + proto(5)+space + local(localW)+space
-		//   + remote(remoteW)+space + state(10)+space + age(7)+space
-		//   + up(10)+space + down(10)
+		//   + remote(remoteW)+space + state(10)+space + svc(6)+space
+		//   + age(7)+space + up(10)+space + down(10)
 		rowW := 2 +
 			(lay.protoW + 1) +
 			(lay.localW + 1) +
 			(lay.remoteW + 1) +
 			(lay.stateW + 1) +
+			(lay.svcW + 1) +
 			(lay.ageW + 1) +
 			(lay.upW + 1) +
 			lay.downW
 
 		// Only check when remaining >= 30 (normal case)
-		remaining := width - (lay.protoW + lay.stateW + lay.ageW + lay.upW + lay.downW + 6 + 2)
+		remaining := width - (lay.protoW + lay.stateW + lay.svcW + lay.ageW + lay.upW + lay.downW + 7 + 2)
 		if remaining >= 30 && rowW != width {
 			t.Errorf("ProcessDetail width=%d: rowW=%d localW=%d remoteW=%d (diff=%d)",
 				width, rowW, lay.localW, lay.remoteW, rowW-width)
@@ -210,9 +211,9 @@ func TestLayoutConsistencyAcrossWidths(t *testing.T) {
 
 			// Process detail
 			lay := computeConnLayout(width)
-			remaining := width - (lay.protoW + lay.stateW + lay.ageW + lay.upW + lay.downW + 6 + 2)
+			remaining := width - (lay.protoW + lay.stateW + lay.svcW + lay.ageW + lay.upW + lay.downW + 7 + 2)
 			if remaining >= 30 {
-				rowW := 2 + (lay.protoW + 1) + (lay.localW + 1) + (lay.remoteW + 1) + (lay.stateW + 1) + (lay.ageW + 1) + (lay.upW + 1) + lay.downW
+				rowW := 2 + (lay.protoW + 1) + (lay.localW + 1) + (lay.remoteW + 1) + (lay.stateW + 1) + (lay.svcW + 1) + (lay.ageW + 1) + (lay.upW + 1) + lay.downW
 				if rowW != width {
 					t.Errorf("ProcessDetail: rowW=%d != width=%d", rowW, width)
 				}

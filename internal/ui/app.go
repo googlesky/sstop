@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/googlesky/sstop/internal/model"
+	"github.com/googlesky/sstop/internal/recorder"
 )
 
 // ViewMode tracks which view is active.
@@ -19,10 +21,14 @@ const (
 	ViewProcessDetail
 	ViewRemoteHosts
 	ViewListenPorts
+	ViewGroups
 )
 
 // SnapshotMsg delivers a new snapshot to the UI.
 type SnapshotMsg model.Snapshot
+
+// playbackEndedMsg signals that playback has finished.
+type playbackEndedMsg struct{}
 
 // IntervalSetter is implemented by the collector to allow dynamic interval changes.
 type IntervalSetter interface {
@@ -52,12 +58,16 @@ type Model struct {
 	detail      processDetail
 	remoteHosts remoteHostsView
 	listenPorts listenPortsView
+	groups      groupsView
 
 	// Help overlay
 	showHelp bool
 
 	// Kill process overlay
 	kill killOverlay
+
+	// Alert overlay
+	alert alertOverlay
 
 	// Search
 	searching   bool
@@ -66,6 +76,9 @@ type Model struct {
 	// Pause
 	paused         bool
 	pausedSnapshot model.Snapshot
+
+	// Cumulative mode toggle
+	cumulativeMode bool
 
 	// Interface selection
 	ifaceNames  []string // available interface names
@@ -78,6 +91,11 @@ type Model struct {
 
 	// Snapshot channel (for tea.Cmd polling)
 	snapCh <-chan model.Snapshot
+
+	// Playback mode
+	player       *recorder.Player
+	playbackFile string // non-empty when in playback mode
+	playbackDone bool   // true when playback has reached the end
 }
 
 // New creates a new UI model.
@@ -90,6 +108,7 @@ func New(snapCh <-chan model.Snapshot) Model {
 		table:       newProcessTable(),
 		remoteHosts: newRemoteHostsView(),
 		listenPorts: newListenPortsView(),
+		alert:       newAlertOverlay(),
 		searchInput: ti,
 		snapCh:      snapCh,
 		ifaceIdx:    -1, // all interfaces
@@ -100,6 +119,12 @@ func New(snapCh <-chan model.Snapshot) Model {
 // SetCollector sets the collector reference for dynamic interval changes.
 func (m *Model) SetCollector(c IntervalSetter) {
 	m.collector = c
+}
+
+// SetPlayback configures playback mode with the given player and filename.
+func (m *Model) SetPlayback(p *recorder.Player, filename string) {
+	m.player = p
+	m.playbackFile = filename
 }
 
 // SetDefaultInterface sets the initial active interface (auto-detected).
@@ -123,7 +148,32 @@ func WaitForSnapshot(ch <-chan model.Snapshot) tea.Cmd {
 }
 
 func (m Model) Init() tea.Cmd {
+	return m.waitForNextSnapshot()
+}
+
+// waitForNextSnapshot returns the appropriate Cmd for waiting on the next snapshot.
+// In playback mode, when the channel closes (playback ends), it pauses instead of quitting.
+func (m Model) waitForNextSnapshot() tea.Cmd {
+	if m.player != nil {
+		return waitForPlaybackSnapshot(m.snapCh, m.player)
+	}
 	return WaitForSnapshot(m.snapCh)
+}
+
+// waitForPlaybackSnapshot waits for the next snapshot during playback.
+// When the channel closes (playback ends), it pauses instead of quitting.
+func waitForPlaybackSnapshot(ch <-chan model.Snapshot, p *recorder.Player) tea.Cmd {
+	return func() tea.Msg {
+		snap, ok := <-ch
+		if !ok {
+			// Playback ended — pause so user can still review the last frame
+			if !p.IsPaused() {
+				p.TogglePause()
+			}
+			return playbackEndedMsg{}
+		}
+		return SnapshotMsg(snap)
+	}
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -144,6 +194,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.snapshot = snap
 			m.table.update(m.snapshot.Processes)
 
+			// Check alerts
+			_, bell := m.alert.checkAlerts(m.snapshot.Processes)
+			if bell {
+				m.alert.flashOn = true
+				// Terminal bell
+				fmt.Fprint(os.Stderr, "\a")
+			} else {
+				m.alert.flashOn = !m.alert.flashOn // toggle flash
+			}
+
 			// If in detail view, check process still exists
 			if m.mode == ViewProcessDetail {
 				found := false
@@ -159,7 +219,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		return m, WaitForSnapshot(m.snapCh)
+		return m, m.waitForNextSnapshot()
+
+	case playbackEndedMsg:
+		// Playback finished — pause UI so user can review last frame
+		m.paused = true
+		m.playbackDone = true
+		return m, nil
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -195,6 +261,12 @@ func (m *Model) updateIfaceList(ifaces []model.InterfaceStats) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Alert overlay — intercept all keys when editing
+	if m.alert.active {
+		cmd := m.alert.update(msg)
+		return m, cmd
+	}
+
 	// Kill overlay — intercept all keys when active
 	if m.kill.active {
 		if m.kill.showResult {
@@ -258,6 +330,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.paused {
 			m.pausedSnapshot = m.snapshot
 		}
+		if m.player != nil {
+			m.player.TogglePause()
+		}
 		return m, nil
 	case keyNextIface:
 		m.cycleInterface()
@@ -268,6 +343,32 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case keyIntervalDown:
 		m.changeInterval(1) // slower = higher index
 		return m, nil
+	case keyCumulative:
+		m.cumulativeMode = !m.cumulativeMode
+		m.table.cumulativeMode = m.cumulativeMode
+		m.table.applyFilterAndSort()
+		return m, nil
+	case keyTreeToggle:
+		m.table.treeMode = !m.table.treeMode
+		m.table.applyFilterAndSort()
+		return m, nil
+	case keySetAlert:
+		if m.alert.threshold > 0 {
+			m.alert.disable()
+		} else {
+			m.alert.open()
+		}
+		return m, m.alert.input.Cursor.BlinkCmd()
+	case keySpeedUp:
+		if m.player != nil {
+			m.player.SetSpeed(m.player.Speed() * 2)
+			return m, nil
+		}
+	case keySpeedDown:
+		if m.player != nil {
+			m.player.SetSpeed(m.player.Speed() / 2)
+			return m, nil
+		}
 	}
 
 	switch m.mode {
@@ -310,6 +411,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if sel := m.table.selected(); sel != nil {
 				m.kill.open(sel.PID, sel.Name)
 			}
+		case keyGroupView:
+			m.mode = ViewGroups
+			m.groups.cursor = 0
+			m.groups.offset = 0
 		}
 
 	case ViewProcessDetail:
@@ -380,6 +485,37 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case keyEnd:
 			m.listenPorts.goEnd(len(m.snapshot.ListenPorts) - 1)
 		}
+
+	case ViewGroups:
+		groups := buildGroups(m.snapshot.Processes)
+		switch action {
+		case keyQuit:
+			return m, tea.Quit
+		case keyEsc:
+			m.mode = ViewProcessTable
+		case keyUp:
+			m.groups.moveUp()
+		case keyDown:
+			m.groups.moveDown(len(groups) - 1)
+		case keyPageUp:
+			m.groups.pageUp()
+		case keyPageDown:
+			m.groups.pageDown(len(groups) - 1)
+		case keyHome:
+			m.groups.goHome()
+		case keyEnd:
+			m.groups.goEnd(len(groups) - 1)
+		case keyEnter:
+			// Filter process table to selected group
+			if m.groups.cursor < len(groups) {
+				g := groups[m.groups.cursor]
+				filterStr := "group:" + g.Name
+				m.table.filter = filterStr
+				m.searchInput.SetValue(filterStr)
+				m.table.applyFilterAndSort()
+				m.mode = ViewProcessTable
+			}
+		}
 	}
 
 	return m, nil
@@ -403,6 +539,8 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				m.remoteHosts.moveUp()
 			case ViewListenPorts:
 				m.listenPorts.moveUp()
+			case ViewGroups:
+				m.groups.moveUp()
 			}
 		case tea.MouseButtonWheelDown:
 			switch m.mode {
@@ -417,6 +555,9 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				m.remoteHosts.moveDown(len(m.snapshot.RemoteHosts) - 1)
 			case ViewListenPorts:
 				m.listenPorts.moveDown(len(m.snapshot.ListenPorts) - 1)
+			case ViewGroups:
+				groups := buildGroups(m.snapshot.Processes)
+				m.groups.moveDown(len(groups) - 1)
 			}
 		case tea.MouseButtonLeft:
 			return m.handleMouseClick(msg)
@@ -429,7 +570,9 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleMouseClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	// Calculate header height to determine content area
 	snap := m.snapshot
-	header := renderHeader(snap, m.width, m.paused, m.activeIface)
+	alertText := m.alert.alertHeaderText(snap.Processes)
+	playbackInfo := m.playbackInfoText()
+	header := renderHeader(snap, m.width, m.paused, m.activeIface, m.cumulativeMode, alertText, playbackInfo)
 	headerHeight := strings.Count(header, "\n") + 1
 
 	contentY := msg.Y - headerHeight
@@ -479,6 +622,25 @@ func (m Model) handleMouseClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if rowIdx >= 0 && rowIdx < len(m.snapshot.ListenPorts) {
 			m.listenPorts.cursor = rowIdx
 		}
+	case ViewGroups:
+		if contentY < 0 {
+			return m, nil
+		}
+		groups := buildGroups(m.snapshot.Processes)
+		rowIdx := contentY - 2 + m.groups.offset // -2 for title + header
+		if rowIdx >= 0 && rowIdx < len(groups) {
+			if rowIdx == m.groups.cursor {
+				// Double-click: enter group filter
+				g := groups[rowIdx]
+				filterStr := "group:" + g.Name
+				m.table.filter = filterStr
+				m.searchInput.SetValue(filterStr)
+				m.table.applyFilterAndSort()
+				m.mode = ViewProcessTable
+			} else {
+				m.groups.cursor = rowIdx
+			}
+		}
 	}
 
 	return m, nil
@@ -526,7 +688,9 @@ func (m Model) View() string {
 	snap := m.snapshot
 
 	// Header: 2-4 lines
-	header := renderHeader(snap, m.width, m.paused, m.activeIface)
+	alertText := m.alert.alertHeaderText(snap.Processes)
+	playbackInfo := m.playbackInfoText()
+	header := renderHeader(snap, m.width, m.paused, m.activeIface, m.cumulativeMode, alertText, playbackInfo)
 	headerHeight := strings.Count(header, "\n") + 1
 
 	// Footer: 1 line
@@ -542,7 +706,7 @@ func (m Model) View() string {
 	var content string
 	switch m.mode {
 	case ViewProcessTable:
-		content = m.table.render(m.width, contentHeight)
+		content = m.table.render(m.width, contentHeight, m.cumulativeMode)
 	case ViewProcessDetail:
 		proc := m.findProcess(m.detail.pid)
 		content = m.detail.render(proc, m.width, contentHeight)
@@ -550,6 +714,8 @@ func (m Model) View() string {
 		content = m.remoteHosts.render(m.snapshot.RemoteHosts, m.width, contentHeight)
 	case ViewListenPorts:
 		content = m.listenPorts.render(m.snapshot.ListenPorts, m.width, contentHeight)
+	case ViewGroups:
+		content = m.groups.render(m.snapshot.Processes, m.width, contentHeight)
 	}
 
 	// Pad content to fill available height so footer stays at bottom
@@ -570,7 +736,9 @@ func (m Model) View() string {
 	)
 
 	// Overlays on top of everything
-	if m.kill.active {
+	if m.alert.active {
+		result = m.alert.render(m.width, m.height)
+	} else if m.kill.active {
 		result = m.kill.render(m.width, m.height)
 	} else if m.showHelp {
 		result = renderHelp(m.width, m.height)
@@ -582,14 +750,43 @@ func (m Model) View() string {
 func (m Model) renderFooter() string {
 	var parts []string
 
-	// Simplified footer with help hint
-	parts = append(parts,
-		styleFooterKey.Render("?")+styleFooter.Render(" help"),
-		styleFooterKey.Render("/")+styleFooter.Render(" filter"),
-		styleFooterKey.Render("q")+styleFooter.Render(" quit"),
-	)
+	switch m.mode {
+	case ViewGroups:
+		parts = append(parts,
+			styleFooterKey.Render("esc")+styleFooter.Render(" back"),
+			styleFooterKey.Render("enter")+styleFooter.Render(" filter by group"),
+			styleFooterKey.Render("?")+styleFooter.Render(" help"),
+			styleFooterKey.Render("q")+styleFooter.Render(" quit"),
+		)
+	case ViewRemoteHosts:
+		parts = append(parts,
+			styleFooterKey.Render("esc")+styleFooter.Render(" back"),
+			styleFooterKey.Render("?")+styleFooter.Render(" help"),
+			styleFooterKey.Render("q")+styleFooter.Render(" quit"),
+		)
+	case ViewListenPorts:
+		parts = append(parts,
+			styleFooterKey.Render("esc")+styleFooter.Render(" back"),
+			styleFooterKey.Render("?")+styleFooter.Render(" help"),
+			styleFooterKey.Render("q")+styleFooter.Render(" quit"),
+		)
+	case ViewProcessDetail:
+		parts = append(parts,
+			styleFooterKey.Render("esc")+styleFooter.Render(" back"),
+			styleFooterKey.Render("d")+styleFooter.Render(" dns"),
+			styleFooterKey.Render("K")+styleFooter.Render(" kill"),
+			styleFooterKey.Render("?")+styleFooter.Render(" help"),
+			styleFooterKey.Render("q")+styleFooter.Render(" quit"),
+		)
+	default:
+		parts = append(parts,
+			styleFooterKey.Render("?")+styleFooter.Render(" help"),
+			styleFooterKey.Render("/")+styleFooter.Render(" filter"),
+			styleFooterKey.Render("q")+styleFooter.Render(" quit"),
+		)
+	}
 
-	if m.table.filter != "" && !m.searching {
+	if m.table.filter != "" && !m.searching && m.mode == ViewProcessTable {
 		parts = append(parts,
 			styleSearchPrompt.Render("filter:")+styleFooter.Render(m.table.filter),
 		)
@@ -607,6 +804,13 @@ func (m Model) renderFooter() string {
 			styleHeaderValue.Render(intervalStr),
 	)
 
+	// Playback speed controls hint
+	if m.player != nil {
+		parts = append(parts,
+			styleFooterKey.Render("←/→")+styleFooter.Render(" speed"),
+		)
+	}
+
 	return "  " + strings.Join(parts, "  ")
 }
 
@@ -620,6 +824,27 @@ func formatInterval(d time.Duration) string {
 		return fmt.Sprintf("%ds", int(s))
 	}
 	return fmt.Sprintf("%.1fs", s)
+}
+
+func (m Model) playbackInfoText() string {
+	if m.player == nil {
+		return ""
+	}
+	if m.playbackDone {
+		return "PLAYBACK END"
+	}
+	icon := "▶"
+	if m.player.IsPaused() {
+		icon = "⏸"
+	}
+	speed := m.player.Speed()
+	var speedStr string
+	if speed == float64(int(speed)) {
+		speedStr = fmt.Sprintf("%dx", int(speed))
+	} else {
+		speedStr = fmt.Sprintf("%.2gx", speed)
+	}
+	return fmt.Sprintf("PLAYBACK %s %s", icon, speedStr)
 }
 
 func (m Model) findProcess(pid uint32) *model.ProcessSummary {

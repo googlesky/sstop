@@ -86,6 +86,40 @@ func FormatRateCompact(bps float64) string {
 	}
 }
 
+// FormatBytesCompact formats a byte count to a fixed-width string (always 6 chars).
+// Similar to FormatRateCompact but for absolute byte counts.
+func FormatBytesCompact(b uint64) string {
+	const (
+		K = 1024.0
+		M = K * 1024
+		G = M * 1024
+		T = G * 1024
+	)
+	v := float64(b)
+	switch {
+	case v < 1:
+		return "   0 B"
+	case v < K:
+		return fmt.Sprintf("%4.0f B", v)
+	case v < 10*K:
+		return fmt.Sprintf("%5.1fK", v/K)
+	case v < M:
+		return fmt.Sprintf("%5.0fK", v/K)
+	case v < 10*M:
+		return fmt.Sprintf("%5.1fM", v/M)
+	case v < G:
+		return fmt.Sprintf("%5.0fM", v/M)
+	case v < 10*G:
+		return fmt.Sprintf("%5.1fG", v/G)
+	case v < T:
+		return fmt.Sprintf("%5.0fG", v/G)
+	case v < 10*T:
+		return fmt.Sprintf("%5.1fT", v/T)
+	default:
+		return fmt.Sprintf("%5.0fT", v/T)
+	}
+}
+
 // Sparkline renders a slice of float64 values as a sparkline using Unicode blocks.
 // The width parameter controls how many characters to output.
 // Values are scaled relative to the maximum value in the slice.

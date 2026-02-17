@@ -8,7 +8,7 @@ import (
 	"github.com/googlesky/sstop/internal/model"
 )
 
-func renderHeader(snap model.Snapshot, width int, paused bool, activeIface string) string {
+func renderHeader(snap model.Snapshot, width int, paused bool, activeIface string, cumulativeMode bool, alertText string, playbackInfo string) string {
 	title := styleTitle.Render("sstop")
 	timestamp := styleDetailLabel.Render(snap.Timestamp.Format("15:04:05"))
 
@@ -41,23 +41,53 @@ func renderHeader(snap model.Snapshot, width int, paused bool, activeIface strin
 		}
 	}
 
-	// Single trend arrow for total bandwidth (up+down combined)
-	trendArrow := TrendArrow(snap.TotalRateHistory)
-	trendStyled := ""
-	switch trendArrow {
-	case "↑":
-		trendStyled = styleHeaderUp.Render(" ↑")
-	case "↓":
-		trendStyled = styleHeaderDown.Render(" ↓")
-	case "→":
-		trendStyled = styleDetailLabel.Render(" →")
+	// CUM badge when cumulative mode is active
+	cumTag := ""
+	if cumulativeMode {
+		cumTag = " " + stylePaused.Render(" CUM ")
 	}
 
-	upLabel := styleHeaderUp.Render("▲ " + FormatRate(totalUp))
-	downLabel := styleHeaderDown.Render("▼ "+FormatRate(totalDown)) + trendStyled
+	// Playback badge
+	playbackTag := ""
+	if playbackInfo != "" {
+		playbackTag = " " + stylePaused.Render(" "+playbackInfo+" ")
+	}
+
+	var upLabel, downLabel string
+	if cumulativeMode {
+		// Sum cumulative bytes across all processes
+		var totalCumUp, totalCumDown uint64
+		for _, p := range snap.Processes {
+			totalCumUp += p.CumUp
+			totalCumDown += p.CumDown
+		}
+		upLabel = styleHeaderUp.Render("▲ " + FormatBytes(totalCumUp))
+		downLabel = styleHeaderDown.Render("▼ " + FormatBytes(totalCumDown))
+	} else {
+		// Single trend arrow for total bandwidth (up+down combined)
+		trendArrow := TrendArrow(snap.TotalRateHistory)
+		trendStyled := ""
+		switch trendArrow {
+		case "↑":
+			trendStyled = styleHeaderUp.Render(" ↑")
+		case "↓":
+			trendStyled = styleHeaderDown.Render(" ↓")
+		case "→":
+			trendStyled = styleDetailLabel.Render(" →")
+		}
+
+		upLabel = styleHeaderUp.Render("▲ " + FormatRate(totalUp))
+		downLabel = styleHeaderDown.Render("▼ "+FormatRate(totalDown)) + trendStyled
+	}
+
+	// Alert tag
+	alertTag := ""
+	if alertText != "" {
+		alertTag = " " + styleAlertTag.Render(alertText)
+	}
 
 	left := lipgloss.JoinHorizontal(lipgloss.Center,
-		title, "  ", timestamp, pauseTag, "  ", procCount,
+		title, "  ", timestamp, pauseTag, cumTag, playbackTag, alertTag, "  ", procCount,
 	)
 	right := lipgloss.JoinHorizontal(lipgloss.Center,
 		ifaceTag, upLabel, "  ", downLabel,

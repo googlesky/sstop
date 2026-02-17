@@ -64,6 +64,7 @@ type connColumnLayout struct {
 	localW  int
 	remoteW int
 	stateW  int
+	svcW    int
 	ageW    int
 	upW     int
 	downW   int
@@ -73,10 +74,11 @@ func computeConnLayout(width int) connColumnLayout {
 	const (
 		protoW = 5
 		stateW = 10 // shortened to fit badges
+		svcW   = 6  // service name (e.g. HTTPS)
 		ageW   = 7
 		upW    = 10
 		downW  = 10
-		fixed  = protoW + stateW + ageW + upW + downW + 6 + 2 // 6 gaps between 7 columns + 2 indent
+		fixed  = protoW + stateW + svcW + ageW + upW + downW + 7 + 2 // 7 gaps between 8 columns + 2 indent
 	)
 
 	remaining := width - fixed
@@ -93,6 +95,7 @@ func computeConnLayout(width int) connColumnLayout {
 		localW:  localW,
 		remoteW: remoteW,
 		stateW:  stateW,
+		svcW:    svcW,
 		ageW:    ageW,
 		upW:     upW,
 		downW:   downW,
@@ -180,11 +183,12 @@ func (d *processDetail) render(proc *model.ProcessSummary, width, height int) st
 		))
 
 		// Connection table header with dynamic widths
-		connHeader := fmt.Sprintf("  %-*s %-*s %-*s %-*s %*s %*s %*s",
+		connHeader := fmt.Sprintf("  %-*s %-*s %-*s %-*s %-*s %*s %*s %*s",
 			lay.protoW, "PROTO",
 			lay.localW, "LOCAL",
 			lay.remoteW, "REMOTE",
 			lay.stateW, "STATE",
+			lay.svcW, "SVC",
 			lay.ageW, "AGE",
 			lay.upW, "UP/s",
 			lay.downW, "DOWN/s")
@@ -225,6 +229,7 @@ func (d *processDetail) render(proc *model.ProcessSummary, width, height int) st
 			local := formatConnAddr(c.SrcIP, c.SrcPort)
 			remote := d.formatRemote(c)
 			state := stateBadge(c.State)
+			svc := Truncate(c.Service, lay.svcW)
 			age := FormatAge(c.Age)
 			up := FormatRate(c.UpRate)
 			down := FormatRate(c.DownRate)
@@ -241,12 +246,18 @@ func (d *processDetail) render(proc *model.ProcessSummary, width, height int) st
 				rowStyle = styleTableRowSelected
 			}
 
+			svcStyle := styleHeaderValue
+			if selected {
+				svcStyle = rowStyle
+			}
+
 			row := lipgloss.JoinHorizontal(lipgloss.Top,
 				rowStyle.Render(indicator),
 				rowStyle.Render(fmt.Sprintf("%-*s ", lay.protoW, proto)),
 				rowStyle.Render(fmt.Sprintf("%-*s ", lay.localW, local)),
 				rowStyle.Render(fmt.Sprintf("%-*s ", lay.remoteW, remote)),
 				stateStyle.Render(fmt.Sprintf("%-*s ", lay.stateW, state)),
+				svcStyle.Render(fmt.Sprintf("%-*s ", lay.svcW, svc)),
 				styleDetailLabel.Render(fmt.Sprintf("%*s ", lay.ageW, age)),
 				styleUpRate.Render(fmt.Sprintf("%*s ", lay.upW, up)),
 				styleDownRate.Render(fmt.Sprintf("%*s", lay.downW, down)),

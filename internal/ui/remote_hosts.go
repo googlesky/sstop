@@ -139,6 +139,10 @@ func (v *remoteHostsView) render(hosts []model.RemoteHostSummary, width, height 
 		if hostName == "" {
 			hostName = "unknown"
 		}
+		// Prepend country flag if available
+		if h.Country != "" {
+			hostName = h.Country + " " + hostName
+		}
 		hostName = Truncate(hostName, hostW)
 		hostName = fmt.Sprintf("%-*s", hostW, hostName)
 

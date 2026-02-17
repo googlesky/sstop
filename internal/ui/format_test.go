@@ -187,6 +187,43 @@ func TestFormatAge(t *testing.T) {
 	}
 }
 
+func TestFormatBytesCompact_Width(t *testing.T) {
+	testCases := []uint64{
+		0, 1, 42, 100, 999, 1023, 1024,
+		5 * 1024, 10 * 1024, 100 * 1024, 1023 * 1024,
+		1024 * 1024, 10 * 1024 * 1024, 100 * 1024 * 1024,
+		1024 * 1024 * 1024, 10 * 1024 * 1024 * 1024,
+		100 * 1024 * 1024 * 1024, 1024 * 1024 * 1024 * 1024,
+		10 * 1024 * 1024 * 1024 * 1024,
+	}
+	for _, b := range testCases {
+		result := FormatBytesCompact(b)
+		if len(result) != 6 {
+			t.Errorf("FormatBytesCompact(%d) = %q (len=%d), want len=6", b, result, len(result))
+		}
+	}
+}
+
+func TestFormatBytesCompact_Values(t *testing.T) {
+	tests := []struct {
+		b    uint64
+		want string
+	}{
+		{0, "   0 B"},
+		{42, "  42 B"},
+		{1024, "  1.0K"},
+		{1024 * 1024, "  1.0M"},
+		{1024 * 1024 * 1024, "  1.0G"},
+		{1024 * 1024 * 1024 * 1024, "  1.0T"},
+	}
+	for _, tt := range tests {
+		result := FormatBytesCompact(tt.b)
+		if result != tt.want {
+			t.Errorf("FormatBytesCompact(%d) = %q, want %q", tt.b, result, tt.want)
+		}
+	}
+}
+
 func TestTrendArrow(t *testing.T) {
 	// Not enough samples
 	if a := TrendArrow([]float64{1, 2}); a != " " {

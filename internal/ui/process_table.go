@@ -35,13 +35,16 @@ func (s SortColumn) String() string {
 
 // processTable manages the process list view state.
 type processTable struct {
-	cursor     int
-	offset     int // scroll offset
-	sortCol    SortColumn
-	filter     string
-	processes  []model.ProcessSummary
-	filtered   []model.ProcessSummary
-	viewHeight int
+	cursor         int
+	offset         int // scroll offset
+	sortCol        SortColumn
+	filter         string
+	processes      []model.ProcessSummary
+	filtered       []model.ProcessSummary
+	viewHeight     int
+	cumulativeMode bool
+	treeMode       bool
+	treePrefix     map[uint32]string // PID → tree drawing prefix
 }
 
 func newProcessTable() processTable {
@@ -70,12 +73,10 @@ func (t *processTable) applyFilterAndSort() {
 		copy(t.filtered, t.processes)
 	} else {
 		t.filtered = t.filtered[:0]
-		lowerFilter := strings.ToLower(t.filter)
-		for _, p := range t.processes {
-			if strings.Contains(strings.ToLower(p.Name), lowerFilter) ||
-				strings.Contains(strings.ToLower(p.Cmdline), lowerFilter) ||
-				strings.Contains(fmt.Sprintf("%d", p.PID), t.filter) {
-				t.filtered = append(t.filtered, p)
+		f := ParseFilter(t.filter)
+		for i := range t.processes {
+			if f.Match(&t.processes[i]) {
+				t.filtered = append(t.filtered, t.processes[i])
 			}
 		}
 	}
@@ -83,6 +84,24 @@ func (t *processTable) applyFilterAndSort() {
 	// Sort
 	sort.SliceStable(t.filtered, func(i, j int) bool {
 		a, b := &t.filtered[i], &t.filtered[j]
+		if t.cumulativeMode {
+			switch t.sortCol {
+			case SortByRate:
+				return (a.CumUp + a.CumDown) > (b.CumUp + b.CumDown)
+			case SortByDown:
+				return a.CumDown > b.CumDown
+			case SortByUp:
+				return a.CumUp > b.CumUp
+			case SortByPID:
+				return a.PID < b.PID
+			case SortByName:
+				return strings.ToLower(a.Name) < strings.ToLower(b.Name)
+			case SortByConns:
+				return a.ConnCount > b.ConnCount
+			default:
+				return false
+			}
+		}
 		switch t.sortCol {
 		case SortByRate:
 			return (a.UpRate + a.DownRate) > (b.UpRate + b.DownRate)
@@ -100,6 +119,90 @@ func (t *processTable) applyFilterAndSort() {
 			return false
 		}
 	})
+
+	// Apply tree ordering if tree mode is active
+	t.buildTree()
+}
+
+// treeNode represents a process in the tree with its indentation info.
+type treeNode struct {
+	proc   model.ProcessSummary
+	depth  int
+	prefix string // tree drawing prefix: "├── ", "└── ", "│   ", "    "
+}
+
+// buildTree reorders filtered processes into tree order.
+func (t *processTable) buildTree() {
+	if !t.treeMode || len(t.filtered) == 0 {
+		return
+	}
+
+	// Build PID set of processes in filtered list
+	pidSet := make(map[uint32]bool)
+	byPID := make(map[uint32]*model.ProcessSummary)
+	for i := range t.filtered {
+		pidSet[t.filtered[i].PID] = true
+		p := t.filtered[i]
+		byPID[p.PID] = &p
+	}
+
+	// Build children map
+	children := make(map[uint32][]uint32) // PPID → [child PIDs]
+	var roots []uint32
+	for _, p := range t.filtered {
+		ppid := p.PPID
+		if ppid == 0 || !pidSet[ppid] {
+			roots = append(roots, p.PID)
+		} else {
+			children[ppid] = append(children[ppid], p.PID)
+		}
+	}
+
+	// Sort roots by current sort order (they're already sorted)
+	// DFS to build tree-ordered list
+	result := make([]model.ProcessSummary, 0, len(t.filtered))
+	treeInfo := make(map[uint32]string) // PID → prefix string
+
+	var walk func(pid uint32, depth int, prefix string, isLast bool)
+	walk = func(pid uint32, depth int, prefix string, isLast bool) {
+		p := byPID[pid]
+		if p == nil {
+			return
+		}
+
+		// Set tree prefix for this node
+		nodePrefix := ""
+		if depth > 0 {
+			if isLast {
+				nodePrefix = prefix + "└─"
+			} else {
+				nodePrefix = prefix + "├─"
+			}
+		}
+		treeInfo[pid] = nodePrefix
+		result = append(result, *p)
+
+		// Walk children
+		kids := children[pid]
+		childPrefix := prefix
+		if depth > 0 {
+			if isLast {
+				childPrefix = prefix + "  "
+			} else {
+				childPrefix = prefix + "│ "
+			}
+		}
+		for i, kid := range kids {
+			walk(kid, depth+1, childPrefix, i == len(kids)-1)
+		}
+	}
+
+	for _, rootPID := range roots {
+		walk(rootPID, 0, "", true)
+	}
+
+	t.filtered = result
+	t.treePrefix = treeInfo
 }
 
 func (t *processTable) nextSort() {
@@ -164,7 +267,7 @@ const (
 	colGraphW  = 16 // sparkline width
 )
 
-func (t *processTable) render(width, height int) string {
+func (t *processTable) render(width, height int, cumulativeMode bool) string {
 	t.viewHeight = height
 
 	if len(t.filtered) == 0 {
@@ -174,11 +277,20 @@ func (t *processTable) render(width, height int) string {
 	// Find max rates for bar scaling
 	maxUp, maxDown := 0.0, 0.0
 	for i := range t.filtered {
-		if t.filtered[i].UpRate > maxUp {
-			maxUp = t.filtered[i].UpRate
-		}
-		if t.filtered[i].DownRate > maxDown {
-			maxDown = t.filtered[i].DownRate
+		if cumulativeMode {
+			if float64(t.filtered[i].CumUp) > maxUp {
+				maxUp = float64(t.filtered[i].CumUp)
+			}
+			if float64(t.filtered[i].CumDown) > maxDown {
+				maxDown = float64(t.filtered[i].CumDown)
+			}
+		} else {
+			if t.filtered[i].UpRate > maxUp {
+				maxUp = t.filtered[i].UpRate
+			}
+			if t.filtered[i].DownRate > maxDown {
+				maxDown = t.filtered[i].DownRate
+			}
 		}
 	}
 
@@ -191,7 +303,7 @@ func (t *processTable) render(width, height int) string {
 	}
 
 	// Header
-	header := renderTableHeader(nameW, t.sortCol)
+	header := renderTableHeader(nameW, t.sortCol, cumulativeMode)
 
 	// Adjust scroll offset
 	if t.cursor < t.offset {
@@ -219,16 +331,33 @@ func (t *processTable) render(width, height int) string {
 		isEvenRow := (i-t.offset)%2 == 1 // alternate rows for zebra striping
 
 		pid := fmt.Sprintf("%-*d", colPidW, p.PID)
-		name := Truncate(p.Name, nameW)
+		displayName := p.Name
+		if t.treeMode {
+			if prefix, ok := t.treePrefix[p.PID]; ok && prefix != "" {
+				displayName = prefix + displayName
+			}
+		}
+		name := Truncate(displayName, nameW)
 		name = fmt.Sprintf("%-*s", nameW, name)
 		graph := Sparkline(p.RateHistory, colGraphW)
 
-		// Bandwidth bars integrated with rate text
+		// Bandwidth bars integrated with rate/cumulative text
 		barW := 5 // width for the bar portion
-		upBar := BandwidthBar(p.UpRate, maxUp, barW)
-		downBar := BandwidthBar(p.DownRate, maxDown, barW)
-		upText := FormatRateCompact(p.UpRate)   // always 6 chars
-		downText := FormatRateCompact(p.DownRate) // always 6 chars
+		var upVal, downVal float64
+		var upText, downText string
+		if cumulativeMode {
+			upVal = float64(p.CumUp)
+			downVal = float64(p.CumDown)
+			upText = FormatBytesCompact(p.CumUp)
+			downText = FormatBytesCompact(p.CumDown)
+		} else {
+			upVal = p.UpRate
+			downVal = p.DownRate
+			upText = FormatRateCompact(p.UpRate)
+			downText = FormatRateCompact(p.DownRate)
+		}
+		upBar := BandwidthBar(upVal, maxUp, barW)
+		downBar := BandwidthBar(downVal, maxDown, barW)
 
 		conns := fmt.Sprintf("%*d", colConnsW, p.ConnCount)
 		listen := fmt.Sprintf("%*d", colListenW, p.ListenCount)
@@ -262,8 +391,8 @@ func (t *processTable) render(width, height int) string {
 			}
 
 			// Rate-intensity colored bars
-			upBarStyled := barStyleUp(p.UpRate, maxUp).Render(upBar)
-			downBarStyled := barStyleDown(p.DownRate, maxDown).Render(downBar)
+			upBarStyled := barStyleUp(upVal, maxUp).Render(upBar)
+			downBarStyled := barStyleDown(downVal, maxDown).Render(downBar)
 
 			// Zebra striping
 			bgStyle := lipgloss.NewStyle()
@@ -282,8 +411,8 @@ func (t *processTable) render(width, height int) string {
 				downTextStyle = downTextStyle.Background(colorZebraRow)
 				connsStyle = connsStyle.Background(colorZebraRow)
 				listenStyle = listenStyle.Background(colorZebraRow)
-				upBarStyled = barStyleUp(p.UpRate, maxUp).Background(colorZebraRow).Render(upBar)
-				downBarStyled = barStyleDown(p.DownRate, maxDown).Background(colorZebraRow).Render(downBar)
+				upBarStyled = barStyleUp(upVal, maxUp).Background(colorZebraRow).Render(upBar)
+				downBarStyled = barStyleDown(downVal, maxDown).Background(colorZebraRow).Render(downBar)
 			}
 
 			row = lipgloss.JoinHorizontal(lipgloss.Top,
@@ -312,7 +441,13 @@ func (t *processTable) render(width, height int) string {
 	return strings.Join(lines, "\n")
 }
 
-func renderTableHeader(nameW int, sortCol SortColumn) string {
+func renderTableHeader(nameW int, sortCol SortColumn, cumulativeMode bool) string {
+	upHeader, downHeader := "UPLOAD/s", "DOWNLOAD/s"
+	if cumulativeMode {
+		upHeader = "UP TOTAL"
+		downHeader = "DN TOTAL"
+	}
+
 	cols := []struct {
 		name  string
 		width int
@@ -322,8 +457,8 @@ func renderTableHeader(nameW int, sortCol SortColumn) string {
 		{"PID", colPidW, SortByPID, 0},
 		{"PROCESS", nameW, SortByName, 0},
 		{"GRAPH", colGraphW, SortColumn(-1), 0},
-		{"UPLOAD/s", colUpW, SortByUp, 1},
-		{"DOWNLOAD/s", colDownW, SortByDown, 1},
+		{upHeader, colUpW, SortByUp, 1},
+		{downHeader, colDownW, SortByDown, 1},
 		{"CONNS", colConnsW, SortByConns, 1},
 		{"LISTEN", colListenW, SortColumn(-1), 1},
 	}

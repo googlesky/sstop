@@ -104,6 +104,35 @@ func readProcessInfo(pid uint32) (name, cmdline string) {
 	return
 }
 
+// ReadPPID reads the parent PID of a process from /proc/<pid>/stat.
+func ReadPPID(pid uint32) uint32 {
+	pidStr := strconv.FormatUint(uint64(pid), 10)
+	data, err := os.ReadFile(filepath.Join("/proc", pidStr, "stat"))
+	if err != nil {
+		return 0
+	}
+
+	// /proc/<pid>/stat format: pid (comm) state ppid ...
+	// comm can contain spaces and parens, so find last ')' first
+	s := string(data)
+	lastParen := strings.LastIndex(s, ")")
+	if lastParen < 0 || lastParen+2 >= len(s) {
+		return 0
+	}
+
+	// After ") " comes: state ppid ...
+	fields := strings.Fields(s[lastParen+2:])
+	if len(fields) < 2 {
+		return 0
+	}
+
+	ppid, err := strconv.ParseUint(fields[1], 10, 32)
+	if err != nil {
+		return 0
+	}
+	return uint32(ppid)
+}
+
 // ParseNetDev reads /proc/net/dev and returns interface stats.
 func ParseNetDev() ([]model.InterfaceStats, error) {
 	f, err := os.Open("/proc/net/dev")

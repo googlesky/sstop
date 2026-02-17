@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/googlesky/sstop/internal/geo"
 	"github.com/googlesky/sstop/internal/model"
 	"github.com/googlesky/sstop/internal/platform"
 )
@@ -44,6 +45,12 @@ type Collector struct {
 	totalHistory *RingBuffer            // system-wide rate history for header sparkline
 	lastPoll     time.Time
 
+	// Cumulative tracking (for exit summary + cumulative mode)
+	sessionStart time.Time
+	totalCumUp   uint64
+	totalCumDown uint64
+	cumByPID     map[uint32]*model.ProcessCumulative
+
 	stopOnce   sync.Once
 	stopCh     chan struct{}
 	snapCh     chan model.Snapshot
@@ -60,6 +67,8 @@ func New(p platform.Platform, interval time.Duration) *Collector {
 		ifaces:       make(map[string]*ifaceTracker),
 		procHistory:  make(map[uint32]*RingBuffer),
 		totalHistory: NewRingBufferN(60), // 60 samples = 1 min at 1s interval
+		sessionStart: time.Now(),
+		cumByPID:     make(map[uint32]*model.ProcessCumulative),
 		stopCh:       make(chan struct{}),
 		snapCh:       make(chan model.Snapshot, 1),
 		intervalCh:   make(chan time.Duration, 1),
@@ -195,6 +204,22 @@ func (c *Collector) poll() {
 			rawDown := float64(deltaRecv) / dt
 			upRate = tracker.upEMA.Update(rawUp)
 			downRate = tracker.downEMA.Update(rawDown)
+
+			// Cumulative tracking
+			c.totalCumUp += deltaSent
+			c.totalCumDown += deltaRecv
+			if s.PID != 0 {
+				pc, ok := c.cumByPID[s.PID]
+				if !ok {
+					pc = &model.ProcessCumulative{PID: s.PID, Name: s.ProcessName}
+					c.cumByPID[s.PID] = pc
+				}
+				pc.BytesUp += deltaSent
+				pc.BytesDown += deltaRecv
+				if pc.Name == "" {
+					pc.Name = s.ProcessName
+				}
+			}
 		}
 
 		tracker.prevBytesSent = s.BytesSent
@@ -222,6 +247,7 @@ func (c *Collector) poll() {
 				DownRate:   downRate,
 				Age:        now.Sub(tracker.firstSeen),
 				RemoteHost: c.dns.Resolve(s.DstIP),
+				Service:    model.ServiceName(s.DstPort, s.SrcPort),
 			})
 		}
 		pd.upRate += upRate
@@ -291,8 +317,18 @@ func (c *Collector) poll() {
 		}
 		hist.Push(pd.upRate + pd.downRate)
 
+		// Populate cumulative bytes from tracking
+		var cumUp, cumDown uint64
+		if pc, ok := c.cumByPID[pid]; ok {
+			cumUp = pc.BytesUp
+			cumDown = pc.BytesDown
+		}
+
+		containerID, serviceName := readCgroup(pid)
+
 		ps := model.ProcessSummary{
 			PID:         pid,
+			PPID:        readPPID(pid),
 			Name:        pd.info.Name,
 			Cmdline:     pd.info.Cmdline,
 			UpRate:      pd.upRate,
@@ -301,6 +337,10 @@ func (c *Collector) poll() {
 			ListenPorts: pd.listen,
 			ConnCount:   len(pd.conns),
 			ListenCount: len(pd.listen),
+			CumUp:       cumUp,
+			CumDown:     cumDown,
+			ContainerID: containerID,
+			ServiceName: serviceName,
 			RateHistory: hist.Samples(),
 		}
 		processes = append(processes, ps)
@@ -357,9 +397,11 @@ func (c *Collector) poll() {
 			prNames = append(prNames, name)
 		}
 		sort.Strings(prNames)
+		country := geo.Lookup(ha.rawIP)
 		remoteHosts = append(remoteHosts, model.RemoteHostSummary{
 			Host:      ha.hostname,
 			IP:        ha.rawIP,
+			Country:   country.Format(),
 			UpRate:    ha.upRate,
 			DownRate:  ha.downRate,
 			ConnCount: ha.connCount,
@@ -422,6 +464,47 @@ func (c *Collector) poll() {
 		default:
 		}
 	}
+}
+
+// SessionStats returns cumulative session statistics.
+func (c *Collector) SessionStats() model.SessionStats {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	stats := model.SessionStats{
+		Duration:  time.Since(c.sessionStart),
+		TotalUp:   c.totalCumUp,
+		TotalDown: c.totalCumDown,
+	}
+
+	// Collect all process cumulatives
+	all := make([]model.ProcessCumulative, 0, len(c.cumByPID))
+	for _, pc := range c.cumByPID {
+		all = append(all, *pc)
+	}
+
+	// Sort by total bytes descending
+	sort.Slice(all, func(i, j int) bool {
+		return (all[i].BytesUp + all[i].BytesDown) > (all[j].BytesUp + all[j].BytesDown)
+	})
+
+	// Top 5
+	if len(all) > 5 {
+		all = all[:5]
+	}
+	stats.TopProcess = all
+
+	return stats
+}
+
+// CumulativeByPID returns cumulative bytes for a specific PID.
+func (c *Collector) CumulativeByPID(pid uint32) (up, down uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if pc, ok := c.cumByPID[pid]; ok {
+		return pc.BytesUp, pc.BytesDown
+	}
+	return 0, 0
 }
 
 // safeDelta handles counter wraps (uint64 overflow).

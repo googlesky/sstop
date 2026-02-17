@@ -107,6 +107,10 @@ var (
 
 	styleZebraRow = lipgloss.NewStyle().
 			Background(colorZebraRow)
+
+	styleAlertTag = lipgloss.NewStyle().
+			Foreground(colorRed).
+			Bold(true)
 )
 
 // rateColorIntensity returns a lipgloss.Color that interpolates between dim and vivid

@@ -48,6 +48,7 @@ func renderHelp(width, height int) string {
 	leftCol = append(leftCol, kv("h       ", "remote hosts"))
 	leftCol = append(leftCol, kv("l       ", "listen ports"))
 	leftCol = append(leftCol, kv("K       ", "kill process"))
+	leftCol = append(leftCol, kv("D       ", "group view"))
 
 	// Right column: Detail + Global
 	var rightCol []string
@@ -60,6 +61,7 @@ func renderHelp(width, height int) string {
 	rightCol = append(rightCol, kv("i / tab ", "cycle interface"))
 	rightCol = append(rightCol, kv("+ / -   ", "refresh speed"))
 	rightCol = append(rightCol, kv("space   ", "pause/resume"))
+	rightCol = append(rightCol, kv("← / →   ", "playback speed"))
 	rightCol = append(rightCol, kv("?       ", "toggle help"))
 	rightCol = append(rightCol, kv("q       ", "quit"))
 
