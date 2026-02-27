@@ -150,17 +150,17 @@ func TestRecordSession(t *testing.T) {
 	}
 	close(in)
 
-	// Drain output
-	var results []model.Snapshot
-	for snap := range out {
-		results = append(results, snap)
+	// Drain output — may receive fewer than 3 due to non-blocking send (drop-if-full)
+	count := 0
+	for range out {
+		count++
 	}
 
-	if len(results) != 3 {
-		t.Fatalf("got %d snapshots from output, want 3", len(results))
+	if count == 0 {
+		t.Fatal("got 0 snapshots from output, expected at least 1")
 	}
 
-	// Verify file was written and can be played back
+	// The recording file must have ALL 3 snapshots (recorder writes before forwarding)
 	player, err := NewPlayer(path)
 	if err != nil {
 		t.Fatalf("NewPlayer: %v", err)
